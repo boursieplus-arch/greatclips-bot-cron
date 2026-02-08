@@ -2,7 +2,6 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import re
-import sqlite3
 from datetime import datetime
 
 BASE_URL = "https://coupons-2save.com/greatclips"
@@ -11,82 +10,124 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
 
 def send_telegram(text: str):
+    """ارسال پیام به تلگرام"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": text}
     try:
         r = requests.post(url, data=data, timeout=10)
-        print("Telegram status:", r.status_code)
+        print(f"Telegram status: {r.status_code}")
+        return r.status_code == 200
     except Exception as e:
-        print("Telegram error:", e)
+        print(f"Telegram error: {e}")
+        return False
 
-def fetch_page():
+def fetch_page(url):
+    """دریافت محتوای یک صفحه"""
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(BASE_URL, headers=headers, timeout=20)
+    resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     return resp.text
 
-def parse_coupons(html):
+def get_coupon_page_links():
+    """از صفحه اصلی، لینک همه صفحات کوپن را می‌گیرد (مثل /greatclips/$8-99)"""
+    html = fetch_page(BASE_URL)
     soup = BeautifulSoup(html, "lxml")
-    coupons = []
-    for elem in soup.find_all(string=re.compile("Great Clips", re.I)):
-        if elem.parent.name in ["script", "style"]:
-            continue
-        full_text = elem.parent.get_text(" ", strip=True)
-        prices = re.findall(r"\$\d+\.\d{2}", full_text)
-        if prices:
-            coupons.append({
-                "description": full_text,
-                "prices": list(set(prices))
-            })
-    return coupons
+    
+    coupon_links = []
+    # لینک‌هایی که به صفحات کوپن اشاره می‌کنند (معمولاً شامل /greatclips/$ هستند)
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # لینک‌های نسبی یا مطلق که به زیرصفحات کوپن اشاره می‌کنند
+        if "/greatclips/" in href and href != "/greatclips" and href != "/greatclips/":
+            # ساخت URL کامل
+            if href.startswith("http"):
+                full_url = href
+            elif href.startswith("/"):
+                full_url = "https://coupons-2save.com" + href
+            else:
+                full_url = "https://coupons-2save.com/greatclips/" + href
+            
+            if full_url not in coupon_links and full_url != BASE_URL:
+                coupon_links.append(full_url)
+    
+    return coupon_links
 
-def init_db():
-    conn = sqlite3.connect("coupons2save.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS coupons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            description TEXT UNIQUE,
-            found_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def save_and_get_new(coupons):
-    conn = sqlite3.connect("coupons2save.db")
-    c = conn.cursor()
-    new_items = []
-    for cpn in coupons:
-        try:
-            c.execute(
-                "INSERT INTO coupons (description, found_at) VALUES (?, ?)",
-                (cpn["description"], datetime.now().isoformat())
-            )
-            conn.commit()
-            new_items.append(cpn)
-        except sqlite3.IntegrityError:
-            pass
-    conn.close()
-    return new_items
+def extract_offer_links(page_url):
+    """از یک صفحه کوپن، همه لینک‌های offers.greatclips.com را استخراج می‌کند"""
+    try:
+        html = fetch_page(page_url)
+        soup = BeautifulSoup(html, "lxml")
+        
+        offer_links = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "offers.greatclips.com" in href:
+                offer_links.add(href)
+        
+        # استخراج قیمت از متن صفحه (برای تیتر)
+        title_tag = soup.find("h1") or soup.find("title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
+        
+        # پیدا کردن قیمت در تیتر یا متن
+        price_match = re.search(r"\$(\d+\.\d{2})", title)
+        price = price_match.group(0) if price_match else "قیمت نامشخص"
+        
+        return {
+            "page_url": page_url,
+            "title": title[:80],  # محدود به 80 کاراکتر
+            "price": price,
+            "offer_links": sorted(offer_links)
+        }
+    except Exception as e:
+        print(f"Error extracting from {page_url}: {e}")
+        return None
 
 def main():
-    init_db()
-    html = fetch_page()
-    coupons = parse_coupons(html)
-    new_coupons = save_and_get_new(coupons)
-
-    print(f"Found: {len(coupons)}, New: {len(new_coupons)}")
+    print(f"🚀 شروع اسکرپ کوپن‌های Great Clips - {datetime.now()}")
     
-    if not new_coupons:
-        print("No new coupons.")
+    # ۱. گرفتن لینک صفحات کوپن از صفحه اصلی
+    print("📄 در حال دریافت لیست صفحات کوپن...")
+    coupon_pages = get_coupon_page_links()
+    print(f"✅ {len(coupon_pages)} صفحه کوپن پیدا شد")
+    
+    # ۲. از هر صفحه، لینک‌های offers را بگیر
+    all_data = []
+    for idx, page_url in enumerate(coupon_pages[:10], 1):  # محدود به ۱۰ صفحه اول برای سرعت
+        print(f"🔍 [{idx}/{min(10, len(coupon_pages))}] در حال پردازش: {page_url}")
+        data = extract_offer_links(page_url)
+        if data and data["offer_links"]:
+            all_data.append(data)
+    
+    print(f"✅ جمعاً {len(all_data)} کوپن با لینک offer پیدا شد")
+    
+    # ۳. ساخت یک پیام واحد
+    if not all_data:
+        message = "❌ هیچ کوپن جدیدی پیدا نشد."
+        send_telegram(message)
         return
-
-    for cpn in new_coupons:
-        text = "🎉 کوپن جدید Great Clips:\n"
-        text += "قیمت‌ها: " + ", ".join(cpn["prices"]) + "\n\n"
-        text += cpn["description"][:500]  # محدود به 500 کاراکتر
-        send_telegram(text)
+    
+    message = f"🎉 کوپن‌های Great Clips ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+    message += f"{'='*40}\n\n"
+    
+    for idx, item in enumerate(all_data, 1):
+        message += f"🔸 کوپن {idx}: {item['price']}\n"
+        message += f"📄 {item['title']}\n"
+        message += f"🔗 صفحه: {item['page_url']}\n"
+        message += f"💳 لینک‌های Offer:\n"
+        for link in item['offer_links'][:5]:  # حداکثر ۵ لینک برای هر کوپن
+            message += f"   • {link}\n"
+        message += "\n"
+        
+        # اگر پیام خیلی بلند شد، در چند بخش بفرست
+        if len(message) > 3500:  # حد تلگرام ۴۰۹۶ است، ولی کمی فاصله می‌گذاریم
+            send_telegram(message)
+            message = f"(ادامه...)\n\n"
+    
+    # ارسال بخش آخر
+    if message.strip():
+        send_telegram(message)
+    
+    print("✅ اتمام کار")
 
 if __name__ == "__main__":
     main()
