@@ -100,43 +100,34 @@ def main():
     
     print(f"✅ جمعاً {len(all_data)} کوپن با لینک offer پیدا شد")
     
-     # ۳. ساخت پیام‌ها در چند بخش
+    # ۳. ساخت یک پیام واحد
     if not all_data:
         message = "❌ هیچ کوپن جدیدی پیدا نشد."
         send_telegram(message)
         return
-
-    header = f"🎉 کوپن‌های Great Clips ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-    header += f"{'='*40}\n\n"
-
-    message = header
-    CHUNK_LIMIT = 3500  # کمی کمتر از 4096 برای حاشیه امن
-
-    def send_if_meaningful(text: str):
-        text = text.rstrip()
-        # اگر فقط «ادامه» است، نفرست
-        if not text:
-            return
-        if text.strip() == "(ادامه...)":
-            return
-        send_telegram(text)
-
+    
+    message = f"🎉 کوپن‌های Great Clips ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+    message += f"{'='*40}\n\n"
+    
     for idx, item in enumerate(all_data, 1):
-        block = ""
-        block += f"🔸 کوپن {idx}: {item['price']}\n"
-        block += f"📄 {item['title']}\n"
-        block += f"🔗 صفحه: {item['page_url']}\n"
-        block += f"💳 لینک‌های Offer:\n"
-        for link in item['offer_links'][:5]:
-            block += f"   • {link}\n"
-        block += "\n"
+        message += f"🔸 کوپن {idx}: {item['price']}\n"
+        message += f"📄 {item['title']}\n"
+        message += f"🔗 صفحه: {item['page_url']}\n"
+        message += f"💳 لینک‌های Offer:\n"
+        for link in item['offer_links'][:5]:  # حداکثر ۵ لینک برای هر کوپن
+            message += f"   • {link}\n"
+        message += "\n"
+        
+        # اگر پیام خیلی بلند شد، در چند بخش بفرست
+        if len(message) > 3500:  # حد تلگرام ۴۰۹۶ است، ولی کمی فاصله می‌گذاریم
+            send_telegram(message)
+            message = f"(ادامه...)\n\n"
+    
+    # ارسال بخش آخر
+    if message.strip():
+        send_telegram(message)
+    
+    print("✅ اتمام کار")
 
-        # اگر اضافه‌کردن این بلاک باعث شد پیام از حد بگذرد، اول پیام فعلی را بفرست
-        if len(message) + len(block) > CHUNK_LIMIT:
-            send_if_meaningful(message)
-            message = "(ادامه...)\n\n" + block
-        else:
-            message += block
-
-    # ارسال آخرین تکه، اگر محتوا دارد
-    send_if_meaningful(message)main()
+if __name__ == "__main__":
+    main()
